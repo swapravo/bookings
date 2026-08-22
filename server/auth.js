@@ -21,9 +21,9 @@ function makeToken(userId) {
   return jwt.sign({ userId }, JWT_SECRET, { expiresIn: '30d' });
 }
 
-function buildUserResponse(row) {
-  const availability = getAvailability(row.id);
-  const blockedDates = getBlockedDates(row.id);
+async function buildUserResponse(row) {
+  const availability = await getAvailability(row.id);
+  const blockedDates = await getBlockedDates(row.id);
   return {
     id: row.id,
     name: row.name,
@@ -52,7 +52,13 @@ router.post('/signup', async (req, res) => {
     return res.status(400).json({ error: 'Password must be at least 6 characters.' });
   }
 
-  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email.toLowerCase().trim());
+  const { data: existing, error: findError } = await db
+    .from('users')
+    .select('id')
+    .eq('email', email.toLowerCase().trim())
+    .maybeSingle();
+
+  if (findError) return res.status(500).json({ error: findError.message });
   if (existing) {
     return res.status(409).json({ error: 'An account with this email already exists.' });
   }
@@ -60,18 +66,25 @@ router.post('/signup', async (req, res) => {
   const id = 'u_' + nanoid(10);
   const passwordHash = await bcrypt.hash(password, 12);
 
-  db.prepare(`
-    INSERT INTO users (id, name, email, password_hash, username, bio, timezone)
-    VALUES (?, ?, ?, ?, NULL, '', 'Asia/Kolkata')
-  `).run(id, name.trim(), email.toLowerCase().trim(), passwordHash);
+  const { error: insertError } = await db.from('users').insert({
+    id,
+    name: name.trim(),
+    email: email.toLowerCase().trim(),
+    password_hash: passwordHash,
+    username: null,
+    bio: '',
+    timezone: 'Asia/Kolkata'
+  });
+
+  if (insertError) return res.status(500).json({ error: insertError.message });
 
   // Seed default availability
-  setAvailability(id, DEFAULT_AVAILABILITY);
+  await setAvailability(id, DEFAULT_AVAILABILITY);
 
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  const { data: user } = await db.from('users').select('*').eq('id', id).single();
   const token = makeToken(id);
 
-  return res.status(201).json({ token, user: buildUserResponse(user) });
+  return res.status(201).json({ token, user: await buildUserResponse(user) });
 });
 
 // POST /api/auth/login
@@ -82,7 +95,13 @@ router.post('/login', async (req, res) => {
     return res.status(400).json({ error: 'Email and password are required.' });
   }
 
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.toLowerCase().trim());
+  const { data: user, error } = await db
+    .from('users')
+    .select('*')
+    .eq('email', email.toLowerCase().trim())
+    .maybeSingle();
+
+  if (error) return res.status(500).json({ error: error.message });
   if (!user) {
     return res.status(401).json({ error: 'No account found with that email. Try signing up.' });
   }
@@ -93,20 +112,25 @@ router.post('/login', async (req, res) => {
   }
 
   const token = makeToken(user.id);
-  return res.json({ token, user: buildUserResponse(user) });
+  return res.json({ token, user: await buildUserResponse(user) });
 });
 
 // GET /api/auth/me  — requires Authorization: Bearer <token>
-router.get('/me', (req, res) => {
+router.get('/me', async (req, res) => {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) return res.status(401).json({ error: 'Not authenticated.' });
 
   try {
     const { userId } = jwt.verify(token, JWT_SECRET);
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
-    if (!user) return res.status(401).json({ error: 'User not found.' });
-    return res.json({ user: buildUserResponse(user) });
+    const { data: user, error } = await db
+      .from('users')
+      .select('*')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (error || !user) return res.status(401).json({ error: 'User not found.' });
+    return res.json({ user: await buildUserResponse(user) });
   } catch {
     return res.status(401).json({ error: 'Invalid or expired session.' });
   }

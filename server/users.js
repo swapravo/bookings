@@ -19,7 +19,7 @@ export function authenticate(req, res, next) {
   }
 }
 
-function buildPublicUser(row) {
+async function buildPublicUser(row) {
   return {
     id: row.id,
     name: row.name,
@@ -27,15 +27,21 @@ function buildPublicUser(row) {
     bio: row.bio || '',
     avatarUrl: row.avatar_url || null,
     timezone: row.timezone,
-    availability: getAvailability(row.id),
-    blockedDates: getBlockedDates(row.id),
+    availability: await getAvailability(row.id),
+    blockedDates: await getBlockedDates(row.id),
     createdAt: row.created_at,
   };
 }
 
 // GET /api/users/me/profile
-router.get('/me/profile', authenticate, (req, res) => {
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.userId);
+router.get('/me/profile', authenticate, async (req, res) => {
+  const { data: user, error } = await db
+    .from('users')
+    .select('*')
+    .eq('id', req.userId)
+    .maybeSingle();
+
+  if (error) return res.status(500).json({ error: error.message });
   if (!user) return res.status(404).json({ error: 'User not found.' });
 
   res.json({
@@ -46,22 +52,25 @@ router.get('/me/profile', authenticate, (req, res) => {
     bio: user.bio || '',
     avatarUrl: user.avatar_url || null,
     timezone: user.timezone,
-    availability: getAvailability(user.id),
-    blockedDates: getBlockedDates(user.id),
+    availability: await getAvailability(user.id),
+    blockedDates: await getBlockedDates(user.id),
     createdAt: user.created_at,
   });
 });
 
 // PUT /api/users/me/profile
-router.put('/me/profile', authenticate, (req, res) => {
+router.put('/me/profile', authenticate, async (req, res) => {
   const { name, bio, timezone } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required.' });
 
-  db.prepare(`
-    UPDATE users SET name = ?, bio = ?, timezone = ? WHERE id = ?
-  `).run(name.trim(), (bio || '').trim(), timezone || 'Asia/Kolkata', req.userId);
+  const { error: updateError } = await db
+    .from('users')
+    .update({ name: name.trim(), bio: (bio || '').trim(), timezone: timezone || 'Asia/Kolkata' })
+    .eq('id', req.userId);
 
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.userId);
+  if (updateError) return res.status(500).json({ error: updateError.message });
+
+  const { data: user } = await db.from('users').select('*').eq('id', req.userId).single();
   res.json({
     id: user.id,
     name: user.name,
@@ -70,69 +79,86 @@ router.put('/me/profile', authenticate, (req, res) => {
     bio: user.bio || '',
     avatarUrl: user.avatar_url || null,
     timezone: user.timezone,
-    availability: getAvailability(user.id),
-    blockedDates: getBlockedDates(user.id),
+    availability: await getAvailability(user.id),
+    blockedDates: await getBlockedDates(user.id),
     createdAt: user.created_at,
   });
 });
 
 // PUT /api/users/me/username
-router.put('/me/username', authenticate, (req, res) => {
+router.put('/me/username', authenticate, async (req, res) => {
   const { username } = req.body;
   if (!username) return res.status(400).json({ error: 'Username is required.' });
 
   const clean = username.toLowerCase().replace(/[^a-z0-9_]/g, '');
   if (clean.length < 3) return res.status(400).json({ error: 'Username must be at least 3 characters.' });
 
-  const conflict = db.prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(clean, req.userId);
+  const { data: conflict, error: findError } = await db
+    .from('users')
+    .select('id')
+    .eq('username', clean)
+    .neq('id', req.userId)
+    .maybeSingle();
+
+  if (findError) return res.status(500).json({ error: findError.message });
   if (conflict) return res.status(409).json({ error: 'That username is already taken.' });
 
-  db.prepare('UPDATE users SET username = ? WHERE id = ?').run(clean, req.userId);
+  const { error: updateError } = await db.from('users').update({ username: clean }).eq('id', req.userId);
+  if (updateError) return res.status(500).json({ error: updateError.message });
+
   res.json({ username: clean });
 });
 
 // GET /api/users/me/availability
-router.get('/me/availability', authenticate, (req, res) => {
-  res.json({ availability: getAvailability(req.userId) });
+router.get('/me/availability', authenticate, async (req, res) => {
+  res.json({ availability: await getAvailability(req.userId) });
 });
 
 // PUT /api/users/me/availability
-router.put('/me/availability', authenticate, (req, res) => {
+router.put('/me/availability', authenticate, async (req, res) => {
   const { availability } = req.body;
   if (!availability) return res.status(400).json({ error: 'Availability is required.' });
-  setAvailability(req.userId, availability);
-  res.json({ availability: getAvailability(req.userId) });
+  await setAvailability(req.userId, availability);
+  res.json({ availability: await getAvailability(req.userId) });
 });
 
 // GET /api/users/me/blocked-dates
-router.get('/me/blocked-dates', authenticate, (req, res) => {
-  res.json({ blockedDates: getBlockedDates(req.userId) });
+router.get('/me/blocked-dates', authenticate, async (req, res) => {
+  res.json({ blockedDates: await getBlockedDates(req.userId) });
 });
 
 // PUT /api/users/me/blocked-dates
-router.put('/me/blocked-dates', authenticate, (req, res) => {
+router.put('/me/blocked-dates', authenticate, async (req, res) => {
   const { blockedDates } = req.body;
   if (!Array.isArray(blockedDates)) return res.status(400).json({ error: 'blockedDates must be an array.' });
-  setBlockedDates(req.userId, blockedDates);
-  res.json({ blockedDates: getBlockedDates(req.userId) });
+  await setBlockedDates(req.userId, blockedDates);
+  res.json({ blockedDates: await getBlockedDates(req.userId) });
 });
 
 // GET /api/users/check-username?username=foo  (public)
-router.get('/check-username', (req, res) => {
+router.get('/check-username', async (req, res) => {
   const { username, excludeUserId } = req.query;
   if (!username) return res.status(400).json({ error: 'Username required.' });
   const clean = username.toLowerCase().replace(/[^a-z0-9_]/g, '');
-  const conflict = db.prepare(
-    'SELECT id FROM users WHERE username = ? AND id != ?'
-  ).get(clean, excludeUserId || '');
+
+  let query = db.from('users').select('id').eq('username', clean);
+  if (excludeUserId) query = query.neq('id', excludeUserId);
+
+  const { data: conflict } = await query.maybeSingle();
   res.json({ available: !conflict });
 });
 
 // GET /api/users/:username  (public profile lookup)
-router.get('/:username', (req, res) => {
-  const row = db.prepare('SELECT * FROM users WHERE username = ?').get(req.params.username.toLowerCase());
+router.get('/:username', async (req, res) => {
+  const { data: row, error } = await db
+    .from('users')
+    .select('*')
+    .eq('username', req.params.username.toLowerCase())
+    .maybeSingle();
+
+  if (error) return res.status(500).json({ error: error.message });
   if (!row) return res.status(404).json({ error: 'User not found.' });
-  res.json({ user: buildPublicUser(row) });
+  res.json({ user: await buildPublicUser(row) });
 });
 
 export default router;

@@ -18,7 +18,7 @@
     "bcryptjs": "^2.4.3",
     "concurrently": "^9.1.2",
     "cors": "^2.8.5",
-    "express": "^4.21.2",
+    "express": "^5.2.1",
     "jsonwebtoken": "^9.0.2",
     "lucide-react": "^0.446.0",
     "nanoid": "^5.0.9",

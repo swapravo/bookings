@@ -16,7 +16,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.112.3",
     "bcryptjs": "^2.4.3",
-    "concurrently": "^9.1.2",
+    "concurrently": "^9.2.5",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
